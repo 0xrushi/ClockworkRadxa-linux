@@ -1,4 +1,13 @@
 
+# Quick Start (Pre-Built Image)
+
+If you want to skip the build process, use this pre-built and configured Arch Linux image:
+
+- **Download:** [MEGA link](https://mega.nz/file/qsA3GTAK#Vn-Ov_UjJACoXncOFeFo2zNVIY9TEAe3-5tkVLVe14Q) (.gz compressed)
+- **Requirements:** At least a **64GB SD card or eMMC** (image was created on 64GB)
+- **Flash to card** and use
+
+
 # Building Arch linux image for Radxa CM5 for u-Console
 
 <img width="950" height="724" alt="image" src="https://github.com/user-attachments/assets/fe0a377f-9d77-44d4-9b34-ad3f1924b75e" />
