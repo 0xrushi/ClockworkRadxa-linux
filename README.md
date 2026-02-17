@@ -1,6 +1,9 @@
 
 # Building Arch linux image for Radxa CM5 for u-Console
 
+<img width="950" height="724" alt="image" src="https://github.com/user-attachments/assets/fe0a377f-9d77-44d4-9b34-ad3f1924b75e" />
+
+
 ### Initial Setup
 
 1. Download the [base Arch Linux image from kwankiu's archlinux-installer](https://github.com/kwankiu/archlinux-installer/releases)
