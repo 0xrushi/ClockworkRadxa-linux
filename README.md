@@ -210,7 +210,9 @@ Note: The uConsole motherboard uses the CM5-CM4IO pinout, so using a compatible 
 ---
 
 ============
+
 Linux kernel
+
 ============
 
 There are several guides for kernel developers and users. These guides can
