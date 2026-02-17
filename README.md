@@ -9,6 +9,19 @@
 4. Install Arch Linux and perform any initial configuration
 5. Power down and transfer the SD card/eMMC to your uConsole
 
+### Network Setup
+
+Once you insert the SD card into the uConsole and power it on:
+
+1. **Plug in the Ethernet module** — Connect the USB Ethernet adapter with an ethernet cable
+2. **Find the IP address** — Use a network scanner to detect the device:
+   - **Android:** [Fing app](https://play.google.com/store/apps/details?id=com.overlook.android.fing)
+   - **Other options:** `nmap`, `arp-scan`, or your router's DHCP client list
+3. **SSH into the uConsole:**
+   ```bash
+   ssh archuser@<ip-address>
+   ```
+
 At this point, your uConsole will boot but the display will be blank (backlight on, no image).
 
 ## Prerequisites for Display Fix
@@ -165,7 +178,7 @@ Verify your boot configuration:
 - Ensure the `fdt` path in `extlinux.conf` is correct
 - Ensure there is NO `fdtoverlays` line
 
-Restore the backup if needed (in case boot crashes):
+Restore the backup if needed:
 ```bash
 sudo cp /boot/extlinux/extlinux.conf.bak /boot/extlinux/extlinux.conf
 ```
@@ -206,7 +219,6 @@ ls /boot/initramfs*
 - **Official Radxa CM5-IO Board** — [radxa.com](https://radxa.com/products/io-board/cm5-io-board/)
 
 Note: The uConsole motherboard uses the CM5-CM4IO pinout, so using a compatible CM5-CM4IO board may help with installation and compatibility.
-
 ---
 
 ============
