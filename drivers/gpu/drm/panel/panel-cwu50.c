@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/of_device.h>
 #include <linux/module.h>
+#include <video/mipi_display.h>
 
 struct cwu50 {
 	struct device *dev;
@@ -16,6 +17,7 @@ struct cwu50 {
 	struct regulator *supply;
 	struct gpio_desc *reset_gpio;
 	struct backlight_device *backlight;
+	int error;
 	bool prepared;
 	bool enabled;
 	enum drm_panel_orientation orientation;
@@ -41,13 +43,26 @@ static inline struct cwu50 *panel_to_cwu50(struct drm_panel *panel)
 #define dcs_write_seq(seq...)                              \
 ({                                                              \
 	static const u8 d[] = { seq };                          \
-	mipi_dsi_dcs_write_buffer(dsi, d, ARRAY_SIZE(d));	 \
+	cwu50_dcs_write(ctx, d, ARRAY_SIZE(d));			\
 })
+
+static void cwu50_dcs_write(struct cwu50 *ctx, const void *data, size_t len)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	int ret;
+
+	if (ctx->error)
+		return;
+
+	ret = mipi_dsi_dcs_write_buffer(dsi, data, len);
+	if (ret < 0) {
+		dev_err(ctx->dev, "DCS write failed (%d)\n", ret);
+		ctx->error = ret;
+	}
+}
 
 static void cwu50_init_sequence(struct cwu50 *ctx)
 {
-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
-
 	dcs_write_seq(0xE1,0x93);
 	dcs_write_seq(0xE2,0x65);
 	dcs_write_seq(0xE3,0xF8);
@@ -259,10 +274,6 @@ static void cwu50_init_sequence(struct cwu50 *ctx)
 	dcs_write_seq(0xE0,0x00);
 	dcs_write_seq(0xE6,0x02);
 	dcs_write_seq(0xE7,0x02);
-	dcs_write_seq(0x11);// SLPOUT
-	msleep (120);
-	dcs_write_seq(0x29);// DSPON
-	msleep (20);
 	dcs_write_seq(0x35,0x00);
 }
 
@@ -323,15 +334,19 @@ static int cwu50_prepare(struct drm_panel *panel)
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 	msleep(120);
 
+	ctx->error = 0;
+
 	/* Enabe tearing mode: send TE (tearing effect) at VBLANK */
 	ret = mipi_dsi_dcs_set_tear_on(dsi, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
-	if (ret) {
-		dev_err(ctx->dev, "failed to enable vblank TE (%d)\n", ret);
-		return ret;
-	}
+	if (ret)
+		dev_warn(ctx->dev, "failed to enable vblank TE (%d)\n", ret);
+
 	/* Exit sleep mode and power on */
 
 	cwu50_init_sequence(ctx);
+
+	if (ctx->error)
+		return ctx->error;
 
 	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
 	if (ret) {
@@ -339,6 +354,13 @@ static int cwu50_prepare(struct drm_panel *panel)
 		return ret;
 	}
 	msleep(120);
+
+	ret = mipi_dsi_dcs_set_pixel_format(dsi, MIPI_DCS_PIXEL_FMT_24BIT |
+					    (MIPI_DCS_PIXEL_FMT_24BIT << 4));
+	if (ret) {
+		dev_err(ctx->dev, "failed to set pixel format (%d)\n", ret);
+		return ret;
+	}
 
 	ret = mipi_dsi_dcs_set_display_on(dsi);
 	if (ret) {
@@ -413,7 +435,10 @@ static int cwu50_probe(struct mipi_dsi_device *dsi)
 
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST | MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
+			  MIPI_DSI_MODE_VIDEO_BURST |
+			  MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+			  MIPI_DSI_MODE_LPM;
 
 	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset_gpio)) {
