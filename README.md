@@ -45,11 +45,147 @@ To fix the display, you'll need:
 - Working Debian image file for uConsole CM5 (`.img` file)
 - Computer with tools to mount the Debian image
 
+## Build + Deploy a Fixed Kernel (panel driver as module)
+
+The uConsole display stays blank if `CONFIG_DRM_PANEL_CWU50` is built into the kernel (`=y`). Rebuild the kernel with it as a module (`=m`) and deploy the new kernel + modules.
+
+### 0) Build machine prerequisites
+
+Install an AArch64 cross-compiler on your build machine:
+
+```bash
+# Arch
+sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-binutils
+
+# Debian/Ubuntu
+sudo apt install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+```
+
+### 1) Kernel config change
+
+In the kernel source tree root (`.config`), set these:
+
+```text
+CONFIG_REGMAP_I2C=y
+CONFIG_INPUT_AXP20X_PEK=y
+CONFIG_CHARGER_AXP20X=m
+CONFIG_BATTERY_AXP20X=m
+CONFIG_AXP20X_POWER=m
+CONFIG_MFD_AXP20X=y
+CONFIG_MFD_AXP20X_I2C=y
+CONFIG_REGULATOR_AXP20X=y
+CONFIG_DRM_PANEL_CWD686=m
+CONFIG_DRM_PANEL_CWD686_CM3=m
+CONFIG_DRM_PANEL_CWU50=m
+CONFIG_DRM_PANEL_CWU50_CM3=m
+CONFIG_BACKLIGHT_OCP8178=m
+CONFIG_AXP20X_ADC=m
+CONFIG_TI_ADC081C=m
+CONFIG_CRYPTO_LIB_ARC4=y
+CONFIG_CRC_CCITT=y
+```
+
+I have already updated those values in `.config` and they are in this branch.
+
+### 2) One-line driver build fix
+
+When built as a module, the CWU50 panel driver needs an extra include. From the kernel source root:
+
+```bash
+sed -i '/#include <linux\/module.h>/a #include <video/mipi_display.h>' \
+  drivers/gpu/drm/panel/panel-cwu50.c
+```
+
+### 3) Build (Image + modules + dtbs)
+
+From the kernel source root:
+
+```bash
+# prepare the .config file
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+# Cross-compile the ARM64 Linux kernel, build the kernel image, build all loadable modules, and build all device tree blobs — using all CPU cores
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image modules dtbs
+```
+
+### 4) Stage modules (modules_install)
+
+```bash
+mkdir -p ~/cm5-kernel-staging
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- INSTALL_MOD_PATH=$HOME/cm5-kernel-staging modules_install
+```
+
+### 5) Copy kernel + modules to the uConsole
+
+Use the deploy script (edit `REMOTE_HOST` / `MODULES_DIR` at the top if needed):
+
+```bash
+./deploy-scripts/deploy_to_radxa.sh
+```
+
+Or manually (replace `<uconsole-ip>`), run from the kernel source root:
+
+```bash
+# Kernel image
+scp arch/arm64/boot/Image archuser@<uconsole-ip>:/tmp/Image
+ssh archuser@<uconsole-ip> 'sudo cp /tmp/Image /boot/vmlinuz-linux-uconsole'
+
+# Modules
+rsync -av ~/cm5-kernel-staging/lib/modules/ archuser@<uconsole-ip>:/tmp/new-modules/
+ssh archuser@<uconsole-ip> 'sudo cp -r /tmp/new-modules/* /lib/modules/ && rm -rf /tmp/new-modules'
+```
+
+### 6) On uConsole: depmod + initramfs
+
+SSH into the uConsole and use the new kernel version shown by `ls /lib/modules/`:
+
+```bash
+ssh archuser@<uconsole-ip>
+ls /lib/modules/
+
+# get the kernel version
+uname -r
+
+sudo depmod -a <your-kernel-version>
+sudo mkinitcpio -k <your-kernel-version> -g /boot/initramfs-linux-uconsole.img
+```
+
 ## Installation
 
-### Step 1: Extract Files from Debian Image
+### Step 1: Deploy the DTB
 
-**On your other computer (or via SSH):**
+The kernel build produces `rk3588s-radxa-cm5-uconsole-merged.dtb` directly in the source tree — it already has the CWU50 panel, AXP20x PMIC, and DSI1 nodes baked in. This is confirmed working. You do **not** need the Debian image extraction.
+
+Use the deploy script from the kernel source root:
+
+```bash
+./deploy-scripts/deploy_dtb_overlays.sh
+```
+
+This copies the built DTB to `/boot/dtbs/uconsole-cm5/rk3588s-radxa-cm5-uconsole-merged.dtb` on the device.
+
+To verify the DTB is correct before deploying (on the build machine, requires `dtc`):
+
+```bash
+# Inspect the DTB as readable text
+dtc -I dtb -O dts \
+  arch/arm64/boot/dts/rockchip/rk3588s-radxa-cm5-uconsole-merged.dtb \
+  2>/dev/null | grep -E "cwu50|dsi@fde30000|status"
+
+# Quick spot-checks with fdtget (install with: sudo pacman -S dtc)
+fdtget arch/arm64/boot/dts/rockchip/rk3588s-radxa-cm5-uconsole-merged.dtb \
+  /dsi@fde30000/panel@0 compatible
+# Should output: cw,cwu50
+
+fdtget arch/arm64/boot/dts/rockchip/rk3588s-radxa-cm5-uconsole-merged.dtb \
+  /dsi@fde30000 status
+# Should output: okay
+```
+
+<details>
+<summary>Fallback: Extract DTB from Debian image (only if built DTB doesn't work)</summary>
+
+**On your build machine:**
 
 Create a mount point and find partition offsets:
 ```bash
@@ -89,53 +225,47 @@ scp ~/original-debian.dtb archuser@<uconsole-ip>:~/original-debian.dtb
 scp -r ~/debian-dtbo/ archuser@<uconsole-ip>:~/debian-dtbo/
 ```
 
-### Step 2: Merge the DTB with Overlays
-
 **On the uConsole (via SSH):**
 
 Ensure `fdtoverlay` is installed:
 ```bash
-which fdtoverlay
-```
-
-If not found, install it:
-```bash
 sudo pacman -S dtc
 ```
 
-Merge the base DTB with all overlays in the correct order:
+Merge the base DTB with overlays in the correct order:
 ```bash
 fdtoverlay \
   -i ~/original-debian.dtb \
-  -o ~/test-merged.dtb \
+  -o ~/debian-merged.dtb \
   ~/debian-dtbo/axp20x.dtbo \
   ~/debian-dtbo/cwu50_panel.dtbo \
   ~/debian-dtbo/displaystuff.dtbo
 ```
 
-Verify the merge (optional but recommended):
+Verify the merge:
 ```bash
-# Check that the panel node exists
-fdtget ~/test-merged.dtb /dsi@fde30000/panel@0 compatible
+fdtget ~/debian-merged.dtb /dsi@fde30000/panel@0 compatible
 # Should output: cw,cwu50
 
-# Check DSI1 is enabled
-fdtget ~/test-merged.dtb /dsi@fde30000 status
+fdtget ~/debian-merged.dtb /dsi@fde30000 status
 # Should output: okay
 
-# Check DCPHY1 is enabled
-fdtget ~/test-merged.dtb /phy@fedb0000 status
+fdtget ~/debian-merged.dtb /phy@fedb0000 status
 # Should output: okay
 ```
 
-### Step 3: Install the Merged DTB
-
-Copy to boot partition:
+Install the merged DTB:
 ```bash
-sudo cp ~/test-merged.dtb /boot/dtbs/uconsole-cm5/test-merged.dtb
+sudo cp ~/debian-merged.dtb /boot/dtbs/uconsole-cm5/debian-merged.dtb
 ```
 
-### Step 4: Update Boot Configuration
+Then point `extlinux.conf` at `/boot/dtbs/uconsole-cm5/debian-merged.dtb` instead.
+
+</details>
+
+---
+
+### Step 2: Update Boot Configuration
 
 Back up current configuration:
 ```bash
@@ -147,24 +277,23 @@ Edit the configuration:
 sudo nano /boot/extlinux/extlinux.conf
 ```
 
-Update it to look like this (adjust UUID, kernel, and initrd paths for your system):
+Update the `fdt` line to point to the newly deployed DTB (keep everything else as-is):
 ```
-label uconsole
-menu label uConsole CM5
-kernel /boot/vmlinuz-linux-uconsole
-initrd /boot/initramfs-linux-aarch64-rockchip-bsp6.1-joshua-git.img
-fdt /boot/dtbs/uconsole-cm5/test-merged.dtb
-append root=UUID=b6416d3c-ad04-4289-a5d1-8c02070ba8a1 earlycon=uart8250,mmio32,0xfeb50000 console=ttyFIQ0 console=tty1 consoleblank=0 loglevel=7 panic=10 rootwait rw init=/sbin/init rootfstype=ext4
+label uconsole-linux-uconsole
+    menu label uConsole (vmlinuz-linux-uconsole)
+    kernel /boot/vmlinuz-linux-uconsole
+    initrd /boot/initramfs-linux-uconsole.img
+    fdt /boot/dtbs/uconsole-cm5/rk3588s-radxa-cm5-uconsole-merged.dtb
+    append root=UUID=b6416d3c-ad04-4289-a5d1-8c02070ba8a1 earlycon=uart8250,mmio32,0xfeb50000 console=ttyFIQ0 console=tty1 consoleblank=0 loglevel=7 panic=10 rootwait rw init=/sbin/init rootfstype=ext4 cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1 irqchip.gicv3_pseudo_nmi=0 switolb=1 coherent_pool=2M fbcon=rotate:1
 ```
 
 **Critical notes:**
-- The `fdt` line must point to your newly merged DTB
-- **Do NOT include an `fdtoverlays` line**—overlays are already merged into the DTB
-- Adding `fdtoverlays` would apply them twice and break the display
+- **Do NOT include an `fdtoverlays` line** — overlays are already baked into the DTB
+- The initramfs must be rebuilt for the new kernel version before rebooting (see step 6)
 
 Save and exit (Ctrl+O, Enter, Ctrl+X in nano).
 
-### Step 5: Reboot
+### Step 3: Reboot
 
 ```bash
 sudo reboot
@@ -212,14 +341,39 @@ ls /boot/vmlinuz*
 ls /boot/initramfs*
 ```
 
+## Misc: Networking
+
+### Ethernet
+
+Ethernet works out of the box via the USB Ethernet adapter — no configuration needed. Plug it in and the device will get a DHCP address.
+
+### WiFi (NetworkManager fix)
+
+NetworkManager fails to start on boot with `status=226/NAMESPACE` because its service unit has `ProtectSystem=true`, which makes systemd try to bind-mount `/efi` as read-only. This device has no `/efi` directory (it uses extlinux, not UEFI), so the mount fails.
+
+Fix with a drop-in override:
+
+```bash
+sudo mkdir -p /etc/systemd/system/NetworkManager.service.d
+sudo tee /etc/systemd/system/NetworkManager.service.d/no-protect-system.conf << 'EOF'
+[Service]
+ProtectSystem=false
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now NetworkManager
+```
+
+This persists across reboots. After running it, WiFi can be managed normally with `nmcli` or `nmtui`.
+
 ## Key Files Reference
 
 | File | Purpose |
 |------|---------|
-| `~/original-debian.dtb` | Base DTB extracted from working Debian image |
-| `~/debian-dtbo/*.dtbo` | Overlay files from Debian image |
-| `~/test-merged.dtb` | Properly merged DTB (base + overlays) |
-| `/boot/dtbs/uconsole-cm5/test-merged.dtb` | Installed copy used at boot |
+| `arch/arm64/boot/dts/rockchip/rk3588s-radxa-cm5-uconsole-merged.dtb` | Built-from-source DTB with panel/PMIC/DSI nodes (preferred) |
+| `/boot/dtbs/uconsole-cm5/rk3588s-radxa-cm5-uconsole-merged.dtb` | Installed copy used at boot |
+| `~/original-debian.dtb` | (Fallback) Base DTB extracted from Debian image |
+| `~/debian-dtbo/*.dtbo` | (Fallback) Overlay files from Debian image |
+| `~/debian-merged.dtb` | (Fallback) Merged DTB from Debian base + overlays |
 | `/boot/extlinux/extlinux.conf` | Boot configuration |
 | `/boot/extlinux/extlinux.conf.bak` | Configuration backup |
 

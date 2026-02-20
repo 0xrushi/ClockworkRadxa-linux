@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-REMOTE_USER="archuser"
+REMOTE_USER="clockwork"
 REMOTE_HOST="192.168.1.174"
 STAGING_DIR="~/kernel-deploy-tmp"
 
