@@ -150,6 +150,96 @@ sudo depmod -a <your-kernel-version>
 sudo mkinitcpio -k <your-kernel-version> -g /boot/initramfs-linux-uconsole.img
 ```
 
+### 7) Install kernel headers (optional, for building out-of-tree modules)
+
+If you need to compile kernel modules on the device (e.g. USB WiFi drivers
+like rtl8831, rtl8812au), you need the kernel headers installed. Without them
+the `/lib/modules/<version>/build` symlink points to the build machine and
+module compilation fails with `No such file or directory`.
+
+**Quick method** — use the deploy script from the kernel source root:
+
+```bash
+./deploy-scripts/deploy_kernel_headers.sh
+```
+
+**Arch package method** — build and install a proper `linux-uconsole-headers` package:
+
+```bash
+# On the build machine, from the kernel source root:
+cd packaging
+KERNEL_SRC=/path/to/ClockworkRadxa-linux CARCH=aarch64 makepkg -f -A -p PKGBUILD-headers
+
+# Copy to the device:
+scp linux-uconsole-headers-*.pkg.tar.zst clockwork@<uconsole-ip>:~/
+
+# On the device:
+sudo pacman -U linux-uconsole-headers-*.pkg.tar.zst
+```
+
+**Fix build symlink if kernel version doesn't match:**
+
+The headers package installs to `/usr/lib/modules/<headers-version>/build`.
+If the running kernel has a different git hash (e.g. from doc-only commits
+after the kernel was deployed), the `/lib/modules/$(uname -r)/build` symlink
+will still be broken. Fix it by pointing the running kernel's symlink to the
+installed headers:
+
+```bash
+# Check running kernel version and what headers are installed
+uname -r
+ls /usr/lib/modules/
+
+# Replace the broken symlinks (adjust versions to match your output)
+sudo rm -f /lib/modules/$(uname -r)/build /lib/modules/$(uname -r)/source
+sudo ln -s /usr/lib/modules/<headers-version>/build /lib/modules/$(uname -r)/build
+sudo ln -s /usr/lib/modules/<headers-version>/build /lib/modules/$(uname -r)/source
+
+# Verify it works
+ls /lib/modules/$(uname -r)/build/Makefile
+```
+
+After installing, out-of-tree modules can be built on the device:
+```bash
+cd /path/to/driver/source
+make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+sudo make -C /lib/modules/$(uname -r)/build M=$(pwd) modules_install
+```
+
+### Clean kernel version string (removing `-dirty` and `-g<hash>`) (Optional)
+
+By default the kernel version looks like `6.1.84-g57961f7359ee-dirty` instead
+of a clean `6.1.84`. This comes from two `.config` / git interactions:
+
+| Suffix | Cause | Fix |
+|--------|-------|-----|
+| `-g<hash>` | `CONFIG_LOCALVERSION_AUTO=y` appends the git short hash | Set `CONFIG_LOCALVERSION_AUTO=n` |
+| `-dirty` | Uncommitted changes in the git working tree | Commit or `git stash` all changes before building |
+
+To get a clean version like `6.1.84`:
+
+```bash
+# 1. Disable the automatic git-hash suffix
+scripts/config --disable LOCALVERSION_AUTO
+# (or manually set CONFIG_LOCALVERSION_AUTO=n in .config)
+
+# 2. Make sure LOCALVERSION is empty (it is by default)
+scripts/config --set-str LOCALVERSION ""
+
+# 3. Commit or stash any uncommitted changes so git doesn't add -dirty
+git stash   # or: git add -A && git commit -m "pre-build snapshot"
+
+# 4. Rebuild
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image modules dtbs
+```
+
+After rebuilding, `make kernelrelease` should output just `6.1.84`.
+
+> **Note:** If you use `CONFIG_LOCALVERSION_AUTO=y` but have a clean git tree
+> (everything committed), the version will be `6.1.84-g<hash>` without `-dirty`.
+> This is useful if you want to track which commit a kernel was built from.
+
 ## Installation
 
 ### Step 1: Deploy the DTB
